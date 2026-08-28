@@ -4,11 +4,10 @@ from itertools import combinations
 
 import numpy as np
 
-from balatro_sim.env import HAND_SLOTS, BalatroEnv
+from balatro_sim.env import SHOP_SLOTS, SUBSET_TO_INDEX, BalatroEnv
 from balatro_sim.game_state import GameState
 from balatro_sim.hands import HandType, evaluate_hand
 from balatro_sim.scoring import ScoreResult, score_hand
-
 
 MAX_STEPS_PER_EPISODE = 500
 
@@ -36,32 +35,49 @@ def _best_combo(game: GameState) -> tuple[list, ScoreResult]:
     return best_cards, best_score
 
 
+def _heuristic_shop_choice(game: GameState) -> int:
+    """Buys the cheapest affordable offering if a joker slot is free, else leaves."""
+    LEAVE = SHOP_SLOTS + 1
+    if game.shop is None or len(game.jokers) >= game.max_joker_slots:
+        return LEAVE
+    affordable = [(i, item) for i, item in enumerate(game.shop.offerings) if item.price <= game.money]
+    if not affordable:
+        return LEAVE
+    cheapest_idx, _ = min(affordable, key=lambda pair: pair[1].price)
+    return cheapest_idx
+
+
 def heuristic_action(env: BalatroEnv, obs=None) -> np.ndarray:
-    """Enumerates every 1-5 card combo in hand, scores it (jokers included),
-    and plays the best one -- unless it's only High Card and a discard is
-    available, in which case it discards the three weakest cards instead."""
+    """Round phase: enumerates every 1-5 card combo in hand, scores it (jokers
+    included), and plays the best one -- unless it's only High Card and a
+    discard is available, in which case it discards the three weakest cards.
+    Shop phase: buys the cheapest affordable joker if a slot is free, else
+    leaves the shop. Never rerolls."""
     game = env.game
-    action = np.zeros(HAND_SLOTS + 1, dtype=int)
+    action = np.zeros(3, dtype=int)
+
+    if game.phase == "shop":
+        action[2] = _heuristic_shop_choice(game)
+        return action
 
     best_cards, best_score = _best_combo(game)
     best_hand_type = evaluate_hand(best_cards).hand_type
 
     if best_hand_type == HandType.HIGH_CARD and game.discards_remaining > 0:
         weakest = sorted(range(len(game.hand)), key=lambda i: game.hand[i].rank.chip_value)[:3]
-        for i in weakest:
-            action[i] = 1
-        action[HAND_SLOTS] = 1  # discard
+        action[0] = SUBSET_TO_INDEX[frozenset(weakest)]
+        action[1] = 1  # discard
     else:
-        for card in best_cards:
-            action[game.hand.index(card)] = 1
-        action[HAND_SLOTS] = 0  # play
+        indices = [game.hand.index(card) for card in best_cards]
+        action[0] = SUBSET_TO_INDEX[frozenset(indices)]
+        action[1] = 0  # play
 
     return action
 
 
-def run_episode(agent_fn, seed: int) -> dict:
+def run_episode(agent_fn, seed: int, env_factory=BalatroEnv) -> dict:
     """Runs one episode with agent_fn(env, obs) -> action. Returns a summary dict."""
-    env = BalatroEnv()
+    env = env_factory()
     obs, _ = env.reset(seed=seed)
     total_reward = 0.0
     for _ in range(MAX_STEPS_PER_EPISODE):

@@ -61,3 +61,31 @@ def test_buy_raises_if_not_enough_money():
         assert False, "expected ValueError"
     except ValueError:
         pass
+
+
+def test_offerings_never_repeat_within_one_shop_visit():
+    pool = make_pool(30)
+    for seed in range(20):
+        shop = Shop(pool, rng=random.Random(seed))
+        names = [item.name for item in shop.offerings]
+        assert len(names) == len(set(names))
+
+
+def test_rarity_weighting_favors_common_over_uncommon_over_rare():
+    mixed_pool = (
+        [ShopItem(name=f"common{i}", price=2, rarity="common") for i in range(20)]
+        + [ShopItem(name=f"uncommon{i}", price=5, rarity="uncommon") for i in range(20)]
+        + [ShopItem(name=f"rare{i}", price=8, rarity="rare") for i in range(20)]
+    )
+    rng = random.Random(0)
+    counts = {"common": 0, "uncommon": 0, "rare": 0}
+    for _ in range(2000):
+        shop = Shop(mixed_pool, rng=rng)
+        for item in shop.offerings:
+            counts[item.rarity] += 1
+
+    # matches the verified 70/25/5 shop rarity weights, roughly
+    assert counts["common"] > counts["uncommon"] > counts["rare"]
+    total = sum(counts.values())
+    assert 0.60 < counts["common"] / total < 0.80
+    assert 0.15 < counts["uncommon"] / total < 0.35

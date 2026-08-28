@@ -16,6 +16,13 @@ JOKER_PRICE_RANGE = {
     "legendary": (20, 20),
 }
 
+# Verified against balatrowiki.org/community sources: when the shop generates
+# a card slot, it picks a rarity tier with these weights, then a specific
+# joker within that tier. The wiki doesn't document the within-tier
+# selection rule explicitly; uniform-within-tier is the standard community
+# understanding, not independently wiki-verified.
+RARITY_WEIGHTS = {"common": 70, "uncommon": 25, "rare": 5}
+
 
 @dataclass(frozen=True)
 class ShopItem:
@@ -37,8 +44,24 @@ class Shop:
         self._roll_offerings()
 
     def _roll_offerings(self) -> None:
-        k = min(CARD_SLOTS, len(self.item_pool))
-        self.offerings = self.rng.sample(self.item_pool, k) if k else []
+        # Picks a rarity tier per slot (weighted by RARITY_WEIGHTS, renormalized
+        # over whichever rarities are actually present in the pool -- e.g. an
+        # Ante-1 common-only pool always resolves to "common"), then a specific
+        # joker uniformly within that tier, without replacement across slots
+        # in the same shop visit.
+        self.offerings = []
+        available = list(self.item_pool)
+        for _ in range(min(CARD_SLOTS, len(available))):
+            rarities_present = sorted({item.rarity for item in available})
+            weights = [RARITY_WEIGHTS.get(r, 0) for r in rarities_present]
+            if sum(weights) == 0:
+                chosen_rarity = self.rng.choice(rarities_present)
+            else:
+                chosen_rarity = self.rng.choices(rarities_present, weights=weights, k=1)[0]
+            candidates = [item for item in available if item.rarity == chosen_rarity]
+            chosen_item = self.rng.choice(candidates)
+            self.offerings.append(chosen_item)
+            available.remove(chosen_item)
 
     def reroll(self, money: int) -> int:
         if money < self.reroll_cost:

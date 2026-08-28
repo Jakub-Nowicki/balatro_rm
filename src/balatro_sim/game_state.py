@@ -3,12 +3,20 @@ from __future__ import annotations
 import random
 from dataclasses import dataclass
 
-from balatro_sim.blinds import BLIND_ORDER, Blind, blind_requirement, blind_reward as get_blind_reward
+from balatro_sim.blinds import (
+    BLIND_ORDER,
+    IMPLEMENTED_ANTE_1_BOSSES,
+    Blind,
+    BossBlind,
+    blind_requirement,
+    blind_reward as get_blind_reward,
+)
 from balatro_sim.cards import Card, Deck
 from balatro_sim.economy import UNUSED_HAND_BONUS, calculate_interest
 from balatro_sim.hands import evaluate_hand
-from balatro_sim.jokers import Joker
+from balatro_sim.jokers import Joker, make_joker, shop_item_pool
 from balatro_sim.scoring import ScoreResult, score_hand
+from balatro_sim.shop import Shop, ShopItem
 
 @dataclass
 class CashOutResult:
@@ -22,6 +30,7 @@ STARTING_MONEY = 4
 HAND_SIZE = 8
 HANDS_PER_ROUND = 4
 DISCARDS_PER_ROUND = 3  # Red Deck (+1 discard) is applied by callers, not hardcoded here
+MAX_JOKER_SLOTS = 5
 
 
 class GameState:
@@ -34,6 +43,8 @@ class GameState:
         discards_per_round: int = DISCARDS_PER_ROUND,
         starting_money: int = STARTING_MONEY,
         jokers: list[Joker] | None = None,
+        max_joker_slots: int = MAX_JOKER_SLOTS,
+        shop_rarities: set[str] | None = frozenset({"common", "uncommon"}),
         rng: random.Random | None = None,
     ):
         self.ante = ante
@@ -43,7 +54,13 @@ class GameState:
         self.discards_per_round = discards_per_round
         self.money = starting_money
         self.jokers = jokers if jokers is not None else []
+        self.max_joker_slots = max_joker_slots
+        self.shop_rarities = shop_rarities
         self.rng = rng or random.Random()
+        self.phase = "round"
+        self.shop: Shop | None = None
+        self.active_boss: BossBlind | None = None
+        self.cards_played_this_ante: set[Card] = set()
         self._start_round()
 
     def _start_round(self) -> None:
@@ -55,8 +72,12 @@ class GameState:
         self.round_chips = 0
         self._draw_up_to_hand_size()
 
+    def _effective_hand_size(self) -> int:
+        delta = self.active_boss.hand_size_delta if self.active_boss else 0
+        return max(1, self.hand_size + delta)
+
     def _draw_up_to_hand_size(self) -> None:
-        need = self.hand_size - len(self.hand)
+        need = self._effective_hand_size() - len(self.hand)
         if need > 0:
             self.hand.extend(self.deck.draw(need))
 
@@ -77,15 +98,25 @@ class GameState:
         return self.hands_remaining == 0 and not self.is_blind_beaten
 
     def play(self, cards: list[Card]) -> ScoreResult:
+        if self.phase != "round":
+            raise ValueError("not in round phase")
         if self.hands_remaining <= 0:
             raise ValueError("no hands remaining this round")
         if not cards or len(cards) > 5:
             raise ValueError("must play between 1 and 5 cards")
+        if self.active_boss and self.active_boss.required_play_size is not None:
+            if len(cards) != self.active_boss.required_play_size:
+                raise ValueError(f"must play exactly {self.active_boss.required_play_size} cards")
         for c in cards:
             if c not in self.hand:
                 raise ValueError(f"{c!r} is not in hand")
 
         result = evaluate_hand(cards)
+        debuffed_cards = (
+            self.cards_played_this_ante
+            if self.active_boss and self.active_boss.debuffs_previously_played_cards
+            else None
+        )
         score = score_hand(
             result,
             played_cards=cards,
@@ -93,16 +124,34 @@ class GameState:
             hands_remaining=self.hands_remaining,
             discards_remaining=self.discards_remaining,
             money=self.money,
+            debuffed_suit=self.active_boss.debuffed_suit if self.active_boss else None,
+            debuffed_cards=debuffed_cards,
+            deck_size=len(self.deck),
+            max_joker_slots=self.max_joker_slots,
+            rng=self.rng,
         )
         self.round_chips += score.total
+        self.cards_played_this_ante.update(cards)
 
         for c in cards:
             self.hand.remove(c)
         self.hands_remaining -= 1
         self._draw_up_to_hand_size()
+
+        # The Hook: 2 random cards are auto-discarded (free, doesn't touch
+        # discards_remaining) after every played hand, as long as the round
+        # isn't already over -- no point discarding into a round that just ended.
+        if self.active_boss and self.active_boss.auto_discard_after_play and not self.is_round_over:
+            n = min(self.active_boss.auto_discard_after_play, len(self.hand))
+            for c in self.rng.sample(self.hand, n):
+                self.hand.remove(c)
+            self._draw_up_to_hand_size()
+
         return score
 
     def discard(self, cards: list[Card]) -> None:
+        if self.phase != "round":
+            raise ValueError("not in round phase")
         if self.discards_remaining <= 0:
             raise ValueError("no discards remaining this round")
         if not cards or len(cards) > 5:
@@ -132,6 +181,34 @@ class GameState:
         else:
             self.blind = Blind.SMALL
             self.ante += 1
+            self.cards_played_this_ante = set()
 
-        self._start_round()
+        self.active_boss = (
+            self.rng.choice(IMPLEMENTED_ANTE_1_BOSSES) if self.blind == Blind.BOSS else None
+        )
+
+        self.phase = "shop"
+        self.shop = Shop(shop_item_pool(self.shop_rarities), rng=self.rng)
         return CashOutResult(blind_reward=blind_reward, hand_bonus=hand_bonus, interest=interest, total=total)
+
+    def buy_joker(self, item: ShopItem) -> None:
+        if self.phase != "shop" or self.shop is None:
+            raise ValueError("not in shop phase")
+        if len(self.jokers) >= self.max_joker_slots:
+            raise ValueError("no joker slots available")
+        price = self.shop.buy(item, self.money)
+        self.money -= price
+        self.jokers.append(make_joker(item.name))
+
+    def reroll_shop(self) -> None:
+        if self.phase != "shop" or self.shop is None:
+            raise ValueError("not in shop phase")
+        cost = self.shop.reroll(self.money)
+        self.money -= cost
+
+    def leave_shop(self) -> None:
+        if self.phase != "shop":
+            raise ValueError("not in shop phase")
+        self.phase = "round"
+        self.shop = None
+        self._start_round()

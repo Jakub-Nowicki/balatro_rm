@@ -1,14 +1,14 @@
 import numpy as np
 
 from balatro_sim.agents import heuristic_action, random_action, run_episode
-from balatro_sim.env import HAND_SLOTS, BalatroEnv
+from balatro_sim.env import CARD_SUBSETS, BalatroEnv
 
 
 def test_random_action_has_correct_shape():
     env = BalatroEnv()
     env.reset(seed=0)
     action = random_action(env)
-    assert action.shape == (HAND_SLOTS + 1,)
+    assert action.shape == (3,)
 
 
 def test_heuristic_action_is_always_valid_across_seeds():
@@ -16,9 +16,8 @@ def test_heuristic_action_is_always_valid_across_seeds():
         env = BalatroEnv()
         env.reset(seed=seed)
         action = heuristic_action(env)
-        selected = action[:HAND_SLOTS]
-        mode = action[HAND_SLOTS]
-        n_selected = int(selected.sum())
+        subset_idx, mode, _ = action
+        n_selected = len(CARD_SUBSETS[subset_idx])
         assert 1 <= n_selected <= 5
         assert mode in (0, 1)
 

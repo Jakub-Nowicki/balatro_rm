@@ -72,6 +72,11 @@ def test_beat_blind_and_advance_to_big_blind():
     assert game.money == starting_money + 7
     assert game.blind == Blind.BIG
     assert game.ante == 1
+    assert game.phase == "shop"
+    assert game.shop is not None
+
+    game.leave_shop()
+    assert game.phase == "round"
     assert game.round_chips == 0
     assert game.hands_remaining == game.hands_per_round
 
@@ -105,6 +110,51 @@ def test_loss_when_hands_exhausted_without_beating_requirement():
     game.play(game.hand[:1])  # a single random 1-card hand won't reach 300 chips
     assert game.is_game_over_loss
     assert not game.is_blind_beaten
+
+
+def test_buy_joker_deducts_money_and_adds_to_roster():
+    game = GameState(rng=random.Random(0))
+    game.round_chips = game.requirement
+    game.collect_reward_and_advance()
+    game.money = 100
+    item = game.shop.offerings[0]
+
+    game.buy_joker(item)
+
+    assert len(game.jokers) == 1
+    assert game.jokers[0].name == item.name
+    assert game.money == 100 - item.price
+
+
+def test_buy_joker_raises_when_no_slots_left():
+    game = GameState(rng=random.Random(0), max_joker_slots=1)
+    game.round_chips = game.requirement
+    game.collect_reward_and_advance()
+    game.money = 100
+    game.buy_joker(game.shop.offerings[0])
+
+    try:
+        game.buy_joker(game.shop.offerings[0])
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_play_and_buy_raise_outside_their_phase():
+    game = GameState(rng=random.Random(0))
+    try:
+        game.leave_shop()
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
+
+    game.round_chips = game.requirement
+    game.collect_reward_and_advance()
+    try:
+        game.play(game.hand[:1])
+        assert False, "expected ValueError"
+    except ValueError:
+        pass
 
 
 def test_play_applies_equipped_jokers():

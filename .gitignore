@@ -6,5 +6,8 @@ venv/
 .pytest_cache/
 .ipynb_checkpoints/
 runs/
-checkpoints/
+checkpoints/*
+!checkpoints/stable/
+checkpoints/stable/*
+!checkpoints/stable/exp23_combofeat_full_NOSHOP_VALIDATED_73pct_winrate.zip
 logs/

@@ -17,6 +17,11 @@ never had to figure out shop decisions on its own.
 For comparison, a random policy wins 0% of the time, and a simple "always play the best scoring
 hand" heuristic wins less than 10% of the time under the same setup.
 
+This trained model is included in the repo at
+`checkpoints/stable/exp23_combofeat_full_NOSHOP_VALIDATED_73pct_winrate.zip`, so you do not need
+to train anything yourself to try it out. Skip straight to "Playing against the real game" below
+and point `--checkpoint` at that file.
+
 ## What is in scope
 
 Right now this project only covers Ante 1. It includes all 8 Ante 1 Boss Blinds and the full

@@ -1,0 +1,15 @@
+I spent the last few weeks building a Python simulator of Balatro (the poker roguelike that blew up on Steam) from scratch, card rules, scoring, blinds, all of it, and training a reinforcement learning agent to play it.
+
+Then I hooked it up to the actual game. Not the simulator, the real Balatro app, through a mod that lets outside code control it. The AI was only ever trained in my simulator, so this was the real test of whether it actually learned anything.
+
+Over 400 real games against the live game, it wins about 75.5% of the time.
+
+The biggest struggle I had was the AI kept breaking up a full house or flush it had just been dealt and playing something worse instead. I already had the reward punishing that behavior, so it made no sense that it kept happening.
+
+Eventually I figured out the reward was fine the whole time. The actual issue was how I let the AI describe which cards it wanted to play. It had to pick one number out of 218 options, and each number secretly meant a different group of cards. So instead of just pointing at the cards it wanted, it basically had to memorize a phonebook. I switched it to answering a simple yes or no for each card, and also gave it a direct hint about which cards form its best hand. That combination fixed it almost overnight, full house and flush preservation jumped from under 10% correct to over 90%.
+
+Right now it only plays Ante 1. The game gets a lot more complex after that (more bosses, more cards, more systems to model), so I kept the scope there for this first version and will push further later.
+
+Code and writeup: https://lnkd.in/gxuByGj2
+
+Below is the video of the AI playing the game by itself.

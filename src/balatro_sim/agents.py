@@ -48,9 +48,9 @@ def _heuristic_shop_choice(game: GameState) -> int:
 
 
 def heuristic_action(env: BalatroEnv, obs=None) -> np.ndarray:
-    """Round phase: enumerates every 1-5 card combo in hand, scores it (jokers
-    included), and plays the best one -- unless it's only High Card and a
-    discard is available, in which case it discards the three weakest cards.
+    """Round phase: tries every 1-5 card combo in hand, scores it (jokers
+    included), and plays the best one. If the best is only High Card and a
+    discard is available, discards the three weakest cards instead.
     Shop phase: buys the cheapest affordable joker if a slot is free, else
     leaves the shop. Never rerolls."""
     game = env.game

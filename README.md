@@ -6,8 +6,9 @@ the real game live, through a mod that connects to the actual Balatro app.
 
 ## Results
 
-The trained agent wins Ante 1 of real Balatro about 73.5% of the time. That number comes from
-200 real games played against the actual game client, not just the simulator.
+The trained agent wins Ante 1 of real Balatro about 75.5% of the time. That number comes from
+400 real games played against the actual game client, not just the simulator (302 wins out of
+400, mean ante reached 1.76).
 
 The AI itself only learned how to play cards (what to keep, what to discard). It never learned
 shop strategy. During live games, a simple fixed rule buys the cheapest joker it can afford
@@ -157,5 +158,5 @@ currently available. Once the AI could directly compare "should I flag this card
 this card part of the best hand," it learned to copy that signal properly.
 
 After this fix, correctly keeping a full house or flush together went from under 10% of the time
-to somewhere around 85 to 95% in testing, and that held up through a full training run and 200
+to somewhere around 85 to 95% in testing, and that held up through a full training run and 400
 real games played against the live game.

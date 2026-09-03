@@ -29,6 +29,7 @@ from stable_baselines3.common.monitor import Monitor
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
 
 from balatro_sim.agents import heuristic_action, random_action, run_episode
+from balatro_sim.blinds import IMPLEMENTED_ANTE_1_BOSSES
 from balatro_sim.env import BalatroEnv
 from balatro_sim.training_logger import EpisodeCsvLogger, ProgressPrinter
 
@@ -79,6 +80,33 @@ def parse_args() -> argparse.Namespace:
         "for a very cheap env, where per-step IPC round-trip overhead dominates the actual game logic cost.",
     )
     parser.add_argument(
+        "--bias-bosses",
+        default=None,
+        help="comma-separated Boss Blind names (e.g. 'The Psychic,The Pillar') to draw more often than "
+        "the rest, for fine-tuning a policy that's weak against specific bosses without excluding the "
+        "others entirely (full exclusion risks forgetting bosses it stops seeing).",
+    )
+    parser.add_argument(
+        "--bias-multiplier",
+        type=int,
+        default=3,
+        help="how many extra copies of each --bias-bosses entry to add to the boss pool.",
+    )
+    parser.add_argument(
+        "--made-hand-bias",
+        default=None,
+        help="comma-separated hand types (FULL_HOUSE, FLUSH) to deal already-complete in the starting "
+        "hand more often than they occur naturally, for fine-tuning a policy that breaks up a made hand "
+        "instead of playing it -- a random deal rarely already contains one, so a policy gets very "
+        "little natural exposure to that exact situation.",
+    )
+    parser.add_argument(
+        "--made-hand-bias-prob",
+        type=float,
+        default=0.1,
+        help="probability per round, for EACH --made-hand-bias entry, of forcing that hand type.",
+    )
+    parser.add_argument(
         "--checkpoint-every",
         type=int,
         default=200_000,
@@ -96,9 +124,34 @@ def linear_schedule(initial_value: float):
     return schedule
 
 
-def _make_env(enable_shop: bool):
+def _make_env(enable_shop: bool, boss_pool=None, made_hand_bias=None):
     # Module-level, not a closure: SubprocVecEnv pickles this for Windows' spawn.
-    return Monitor(BalatroEnv(enable_shop=enable_shop))
+    return Monitor(BalatroEnv(enable_shop=enable_shop, boss_pool=boss_pool, made_hand_bias=made_hand_bias))
+
+
+def _build_boss_pool(bias_bosses: str | None, multiplier: int):
+    if not bias_bosses:
+        return None
+    names = {n.strip() for n in bias_bosses.split(",")}
+    unknown = names - {b.name for b in IMPLEMENTED_ANTE_1_BOSSES}
+    if unknown:
+        raise ValueError(f"unknown boss name(s) in --bias-bosses: {sorted(unknown)}")
+    pool = list(IMPLEMENTED_ANTE_1_BOSSES)
+    for boss in IMPLEMENTED_ANTE_1_BOSSES:
+        if boss.name in names:
+            pool.extend([boss] * multiplier)
+    return pool
+
+
+def _build_made_hand_bias(made_hand_bias: str | None, prob: float):
+    if not made_hand_bias:
+        return None
+    valid = {"FULL_HOUSE", "FLUSH"}
+    types = {t.strip().upper() for t in made_hand_bias.split(",")}
+    unknown = types - valid
+    if unknown:
+        raise ValueError(f"unknown hand type(s) in --made-hand-bias: {sorted(unknown)} (valid: {sorted(valid)})")
+    return {t: prob for t in types}
 
 
 def collect_bc_dataset(env_factory, num_episodes: int) -> tuple[np.ndarray, np.ndarray]:
@@ -160,7 +213,15 @@ def summarize(name: str, results: list[dict]) -> None:
 
 def main() -> None:
     args = parse_args()
-    env_factory = partial(BalatroEnv, enable_shop=not args.no_shop)
+    boss_pool = _build_boss_pool(args.bias_bosses, args.bias_multiplier)
+    if boss_pool is not None:
+        print(f"biasing boss pool: {args.bias_bosses} x{args.bias_multiplier} copies each", flush=True)
+    made_hand_bias = _build_made_hand_bias(args.made_hand_bias, args.made_hand_bias_prob)
+    if made_hand_bias is not None:
+        print(f"biasing made-hand deals: {made_hand_bias}", flush=True)
+    env_factory = partial(
+        BalatroEnv, enable_shop=not args.no_shop, boss_pool=boss_pool, made_hand_bias=made_hand_bias
+    )
 
     if not args.init_checkpoint:
         print(f"=== Phase 1: collecting {args.bc_episodes} heuristic episodes for behavior cloning ===", flush=True)
@@ -168,7 +229,10 @@ def main() -> None:
         print(f"collected {len(obs)} (obs, action) pairs", flush=True)
 
     net_arch = [int(x) for x in args.net_arch.split(",")]
-    env_fns = [partial(_make_env, enable_shop=not args.no_shop) for _ in range(max(1, args.n_envs))]
+    env_fns = [
+        partial(_make_env, enable_shop=not args.no_shop, boss_pool=boss_pool, made_hand_bias=made_hand_bias)
+        for _ in range(max(1, args.n_envs))
+    ]
     if args.vec_env == "dummy":
         vec_env = DummyVecEnv(env_fns)
     else:

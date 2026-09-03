@@ -4,7 +4,7 @@ from itertools import combinations
 
 import numpy as np
 
-from balatro_sim.env import SHOP_SLOTS, SUBSET_TO_INDEX, BalatroEnv
+from balatro_sim.env import HAND_SLOTS, SHOP_SLOTS, BalatroEnv
 from balatro_sim.game_state import GameState
 from balatro_sim.hands import HandType, evaluate_hand
 from balatro_sim.scoring import ScoreResult, score_hand
@@ -54,10 +54,10 @@ def heuristic_action(env: BalatroEnv, obs=None) -> np.ndarray:
     Shop phase: buys the cheapest affordable joker if a slot is free, else
     leaves the shop. Never rerolls."""
     game = env.game
-    action = np.zeros(3, dtype=int)
+    action = np.zeros(HAND_SLOTS + 2, dtype=int)
 
     if game.phase == "shop":
-        action[2] = _heuristic_shop_choice(game)
+        action[HAND_SLOTS + 1] = _heuristic_shop_choice(game)
         return action
 
     best_cards, best_score = _best_combo(game)
@@ -65,12 +65,14 @@ def heuristic_action(env: BalatroEnv, obs=None) -> np.ndarray:
 
     if best_hand_type == HandType.HIGH_CARD and game.discards_remaining > 0:
         weakest = sorted(range(len(game.hand)), key=lambda i: game.hand[i].rank.chip_value)[:3]
-        action[0] = SUBSET_TO_INDEX[frozenset(weakest)]
-        action[1] = 1  # discard
+        for i in weakest:
+            action[i] = 1
+        action[HAND_SLOTS] = 1  # discard
     else:
         indices = [game.hand.index(card) for card in best_cards]
-        action[0] = SUBSET_TO_INDEX[frozenset(indices)]
-        action[1] = 0  # play
+        for i in indices:
+            action[i] = 1
+        action[HAND_SLOTS] = 0  # play
 
     return action
 

@@ -13,7 +13,7 @@ from balatro_sim.blinds import (
 )
 from balatro_sim.cards import Card, Deck
 from balatro_sim.economy import UNUSED_HAND_BONUS, calculate_interest
-from balatro_sim.hands import evaluate_hand
+from balatro_sim.hands import HandType, evaluate_hand
 from balatro_sim.jokers import Joker, make_joker, shop_item_pool
 from balatro_sim.scoring import ScoreResult, score_hand
 from balatro_sim.shop import Shop, ShopItem
@@ -45,6 +45,7 @@ class GameState:
         jokers: list[Joker] | None = None,
         max_joker_slots: int = MAX_JOKER_SLOTS,
         shop_rarities: set[str] | None = frozenset({"common", "uncommon"}),
+        boss_pool: list[BossBlind] | None = None,
         rng: random.Random | None = None,
     ):
         self.ante = ante
@@ -56,6 +57,12 @@ class GameState:
         self.jokers = jokers if jokers is not None else []
         self.max_joker_slots = max_joker_slots
         self.shop_rarities = shop_rarities
+        # Which bosses can be drawn for the Ante 1 Boss Blind, and at what
+        # relative frequency (repeat an entry to weight it higher) -- defaults
+        # to one of each, uniformly. Lets a fine-tuning run bias exposure
+        # toward specific bosses without excluding the others entirely (full
+        # exclusion risks the policy forgetting bosses it no longer sees).
+        self.boss_pool = boss_pool if boss_pool is not None else IMPLEMENTED_ANTE_1_BOSSES
         self.rng = rng or random.Random()
         self.phase = "round"
         self.shop: Shop | None = None
@@ -75,6 +82,55 @@ class GameState:
     def _effective_hand_size(self) -> int:
         delta = self.active_boss.hand_size_delta if self.active_boss else 0
         return max(1, self.hand_size + delta)
+
+    def force_made_hand_for_training(self, hand_type: HandType) -> None:
+        """Training-only utility, not part of normal game rules: replaces the
+        current hand with one that already contains a complete made hand of
+        the given type (FULL_HOUSE or FLUSH), mixed with random filler.
+
+        A random 8-card deal rarely happens to already contain a complete
+        made hand, so a policy gets very little natural exposure to "you
+        already have a flush, don't discard into it" -- this lets a
+        fine-tuning run deal that exact situation far more often than it
+        occurs naturally, without changing anything about how a normal round
+        is dealt. Never called during ordinary play.
+        """
+        pool = list(self.deck.cards) + list(self.hand)
+        self.rng.shuffle(pool)
+
+        made: list[Card] = []
+        if hand_type == HandType.FULL_HOUSE:
+            by_rank: dict = {}
+            for c in pool:
+                by_rank.setdefault(c.rank, []).append(c)
+            trip_ranks = [r for r, cs in by_rank.items() if len(cs) >= 3]
+            trip_rank = self.rng.choice(trip_ranks)
+            trips = by_rank[trip_rank][:3]
+            pair_ranks = [r for r, cs in by_rank.items() if r != trip_rank and len(cs) >= 2]
+            pair_rank = self.rng.choice(pair_ranks)
+            made = trips + by_rank[pair_rank][:2]
+        elif hand_type == HandType.FLUSH:
+            by_suit: dict = {}
+            for c in pool:
+                by_suit.setdefault(c.suit, []).append(c)
+            for _ in range(20):
+                suit = self.rng.choice([s for s, cs in by_suit.items() if len(cs) >= 5])
+                candidate = by_suit[suit][:5]
+                if evaluate_hand(candidate).hand_type == HandType.FLUSH:
+                    made = candidate
+                    break
+            if not made:
+                return  # couldn't find a clean (non-straight) flush this deck -- leave hand as-is
+        else:
+            raise ValueError(f"unsupported hand_type for force_made_hand_for_training: {hand_type}")
+
+        remaining = [c for c in pool if c not in made]
+        self.rng.shuffle(remaining)
+        filler = remaining[: self._effective_hand_size() - len(made)]
+        new_hand = made + filler
+        self.rng.shuffle(new_hand)  # don't let the made hand always land in the same slots
+        self.hand = new_hand
+        self.deck.cards = [c for c in pool if c not in new_hand]
 
     def _draw_up_to_hand_size(self) -> None:
         need = self._effective_hand_size() - len(self.hand)
@@ -183,9 +239,7 @@ class GameState:
             self.ante += 1
             self.cards_played_this_ante = set()
 
-        self.active_boss = (
-            self.rng.choice(IMPLEMENTED_ANTE_1_BOSSES) if self.blind == Blind.BOSS else None
-        )
+        self.active_boss = self.rng.choice(self.boss_pool) if self.blind == Blind.BOSS else None
 
         self.phase = "shop"
         self.shop = Shop(shop_item_pool(self.shop_rarities), rng=self.rng)

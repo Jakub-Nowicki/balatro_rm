@@ -1,8 +1,11 @@
 import random
+from collections import Counter
+from itertools import combinations
 
 from balatro_sim.blinds import Blind, blind_requirement
 from balatro_sim.cards import Card, Rank, Suit
 from balatro_sim.game_state import GameState
+from balatro_sim.hands import HandType, evaluate_hand
 from balatro_sim.jokers import make_joker
 
 
@@ -169,3 +172,31 @@ def test_play_applies_equipped_jokers():
     assert score.mult == 14
     assert score.total == 30 * 14
     assert game.round_chips == 30 * 14
+
+
+def test_force_made_hand_for_training_produces_full_house():
+    for seed in range(20):
+        game = GameState(rng=random.Random(seed))
+        game.force_made_hand_for_training(HandType.FULL_HOUSE)
+        assert len(game.hand) == game._effective_hand_size()
+        # some 5-card subset of the hand must evaluate to (at least) FULL_HOUSE
+        best = max(
+            evaluate_hand(list(combo)).hand_type
+            for k in range(3, 6)
+            for combo in combinations(game.hand, k)
+        )
+        assert best >= HandType.FULL_HOUSE
+        assert len(game.hand) == len(set(game.hand))  # no duplicate cards
+        # deck and hand together still add up to a full deck, no cards lost/duplicated
+        assert len(game.deck) + len(game.hand) == 52
+
+
+def test_force_made_hand_for_training_produces_flush():
+    for seed in range(20):
+        game = GameState(rng=random.Random(seed))
+        game.force_made_hand_for_training(HandType.FLUSH)
+        assert len(game.hand) == game._effective_hand_size()
+        suit_counts = Counter(c.suit for c in game.hand)
+        assert max(suit_counts.values()) >= 5
+        assert len(game.hand) == len(set(game.hand))
+        assert len(game.deck) + len(game.hand) == 52

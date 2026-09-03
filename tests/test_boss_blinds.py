@@ -1,6 +1,6 @@
 import random
 
-from balatro_sim.blinds import Blind, BossBlind
+from balatro_sim.blinds import IMPLEMENTED_ANTE_1_BOSSES, Blind, BossBlind
 from balatro_sim.cards import Card, Rank, Suit
 from balatro_sim.game_state import GameState
 from balatro_sim.hands import HandType, evaluate_hand
@@ -131,6 +131,29 @@ def test_the_psychic_requires_exactly_five_cards():
 
     score = game.play(game.hand[:5])
     assert score.total > 0
+
+
+def test_custom_boss_pool_biases_which_bosses_are_drawn():
+    psychic = BossBlind("The Psychic", required_play_size=5)
+    pillar = BossBlind("The Pillar", debuffs_previously_played_cards=True)
+    weighted_pool = [psychic] * 3 + [pillar] * 3 + IMPLEMENTED_ANTE_1_BOSSES
+
+    seen = []
+    for seed in range(200):
+        g = GameState(rng=random.Random(seed), boss_pool=weighted_pool)
+        g.round_chips = g.requirement
+        g.collect_reward_and_advance()  # Small -> Big
+        g.leave_shop()
+        g.round_chips = g.requirement
+        g.collect_reward_and_advance()  # Big -> Boss
+        seen.append(g.active_boss.name)
+
+    # weighted 3x each out of a 14-entry pool (6 unweighted + 3 + 3) -> ~21% each,
+    # versus ~7% for every other boss; just confirm they show up far more often.
+    from collections import Counter
+    counts = Counter(seen)
+    assert counts["The Psychic"] > counts["The Club"]
+    assert counts["The Pillar"] > counts["The Club"]
 
 
 def test_the_pillar_debuffs_cards_played_earlier_this_ante():

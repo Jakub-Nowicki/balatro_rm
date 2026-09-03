@@ -58,10 +58,8 @@ class GameState:
         self.max_joker_slots = max_joker_slots
         self.shop_rarities = shop_rarities
         # Which bosses can be drawn for the Ante 1 Boss Blind, and at what
-        # relative frequency (repeat an entry to weight it higher) -- defaults
-        # to one of each, uniformly. Lets a fine-tuning run bias exposure
-        # toward specific bosses without excluding the others entirely (full
-        # exclusion risks the policy forgetting bosses it no longer sees).
+        # relative frequency (repeat an entry to weight it higher). Defaults
+        # to one of each, uniformly.
         self.boss_pool = boss_pool if boss_pool is not None else IMPLEMENTED_ANTE_1_BOSSES
         self.rng = rng or random.Random()
         self.phase = "round"

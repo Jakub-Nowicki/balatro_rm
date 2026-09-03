@@ -1,14 +1,14 @@
-"""Behavior-clone the heuristic agent into a PPO policy, then continue
-training with PPO on the real reward signal ("warm start").
+"""Behavior-clones the heuristic agent into a PPO policy, then continues
+training with real PPO on the actual reward signal (a "warm start").
 
-Three phases, all logged so progress can be checked mid-run:
-  1. collect_bc_dataset -- run the heuristic, record every (obs, action) it
-     produces. Prints "[bc-collect] i/N episodes" periodically.
-  2. behavior_clone -- supervised training of the PPO policy network to
-     imitate those (obs, action) pairs. Prints "[bc-train] epoch i/N loss=..."
-  3. model.learn -- ordinary PPO fine-tuning from the warm-started weights.
+Three phases, all logged so progress can be checked mid run:
+  1. collect_bc_dataset: runs the heuristic and records every (obs, action)
+     pair it produces. Prints "[bc-collect] i/N episodes" periodically.
+  2. behavior_clone: supervised training of the policy network to imitate
+     those pairs. Prints "[bc-train] epoch i/N loss=..."
+  3. model.learn: normal PPO fine-tuning from the warm-started weights.
      Prints "[progress] step/total (%)" periodically and logs every episode
-     to --csv-path (check the last row for the exact current timestep).
+     to --csv-path.
 
 Usage: python scripts/train_warmstart.py [--bc-episodes N] [--bc-epochs N]
     [--timesteps N] [--n-envs N] [--device auto|cpu|cuda] [--no-shop]
@@ -45,10 +45,8 @@ def parse_args() -> argparse.Namespace:
         "--init-checkpoint",
         default=None,
         help="load an existing .zip checkpoint's weights instead of building a fresh network. "
-        "Useful when the loaded model already learned a related skill (e.g. card play/discard "
-        "strategy from a no-shop run) and only needs to learn what's new (e.g. shop decisions) -- "
-        "the BC phase still runs on top of it to calibrate the new behavior, but starts from a "
-        "far better baseline than random init. Requires matching observation/action space shapes.",
+        "Useful when the loaded model already learned a related skill and just needs to learn "
+        "what's new. Requires matching observation and action space shapes.",
     )
     parser.add_argument("--bc-episodes", type=int, default=5000)
     parser.add_argument("--bc-epochs", type=int, default=10)
@@ -67,24 +65,21 @@ def parse_args() -> argparse.Namespace:
         "--lr-schedule",
         default="constant",
         choices=["constant", "linear"],
-        help="'linear' decays --learning-rate down to 0 over the course of training. approx_kl (0.03-0.04) and "
-        "clip_fraction (~0.3) stayed elevated for the entire 5M-step run rather than settling as training "
-        "progressed -- suggests updates stayed just as aggressive late in training as early, when they'd "
-        "ideally shrink into finer adjustments. A decaying LR is the standard fix.",
+        help="'linear' decays --learning-rate down to 0 over the course of training, so updates "
+        "get smaller and more precise later on instead of staying just as aggressive throughout.",
     )
     parser.add_argument(
         "--vec-env",
         default="subprocess",
         choices=["subprocess", "dummy"],
-        help="'dummy' steps all envs sequentially in one process (no IPC) -- can beat 'subprocess' on Windows "
-        "for a very cheap env, where per-step IPC round-trip overhead dominates the actual game logic cost.",
+        help="'dummy' steps all envs sequentially in one process instead of using separate worker "
+        "processes. Can be faster on Windows when each step is cheap.",
     )
     parser.add_argument(
         "--bias-bosses",
         default=None,
-        help="comma-separated Boss Blind names (e.g. 'The Psychic,The Pillar') to draw more often than "
-        "the rest, for fine-tuning a policy that's weak against specific bosses without excluding the "
-        "others entirely (full exclusion risks forgetting bosses it stops seeing).",
+        help="comma-separated Boss Blind names (e.g. 'The Psychic,The Pillar') to draw more often "
+        "than the rest, for practicing against bosses a policy is weak against.",
     )
     parser.add_argument(
         "--bias-multiplier",
@@ -95,10 +90,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--made-hand-bias",
         default=None,
-        help="comma-separated hand types (FULL_HOUSE, FLUSH) to deal already-complete in the starting "
-        "hand more often than they occur naturally, for fine-tuning a policy that breaks up a made hand "
-        "instead of playing it -- a random deal rarely already contains one, so a policy gets very "
-        "little natural exposure to that exact situation.",
+        help="comma-separated hand types (FULL_HOUSE, FLUSH) to deal already-complete in the "
+        "starting hand more often than they occur naturally, since a random deal rarely already "
+        "contains one and the policy needs practice recognizing them.",
     )
     parser.add_argument(
         "--made-hand-bias-prob",
@@ -110,9 +104,8 @@ def parse_args() -> argparse.Namespace:
         "--checkpoint-every",
         type=int,
         default=200_000,
-        help="save an intermediate checkpoint every N timesteps, in addition to the final save -- "
-        "model.save() only runs after model.learn() fully completes, so an unexpected shutdown "
-        "mid-run otherwise loses every step of RL progress (confirmed the hard way).",
+        help="save an intermediate checkpoint every N timesteps, in addition to the final save, so "
+        "an unexpected shutdown mid run doesn't lose all progress.",
     )
     return parser.parse_args()
 
@@ -239,15 +232,8 @@ def main() -> None:
         vec_env = SubprocVecEnv(env_fns) if args.n_envs > 1 else DummyVecEnv(env_fns)
 
     if args.vec_env != "dummy" and args.n_envs >= 16:
-        # PyTorch multi-threads its own CPU ops by default (e.g. across all
-        # logical cores). With N already-parallel worker processes from
-        # SubprocVecEnv, the main process doing that on top can oversubscribe
-        # the CPU. Confirmed tonight this is a real problem at n_envs=24
-        # (fps collapsed from ~1400 to ~290 within minutes) but NOT at
-        # n_envs=8, where there are still 24 idle threads torch can use
-        # productively during the update phase -- forcing 1 thread there
-        # actively hurt throughput (880fps -> ~300fps). Only restrict when
-        # there isn't much CPU headroom left for torch to begin with.
+        # With many worker processes already using the CPU, let torch use just
+        # one thread instead of oversubscribing all cores.
         torch.set_num_threads(1)
 
     lr = linear_schedule(args.learning_rate) if args.lr_schedule == "linear" else args.learning_rate
@@ -269,14 +255,8 @@ def main() -> None:
         )
 
     if args.init_checkpoint:
-        # Skip BC entirely: the loaded model already learned its behavior
-        # through real RL, not imitation, and BC's optimizer (fresh Adam,
-        # lr=1e-3) is calibrated for training a network from scratch -- applied
-        # to weights already fine-tuned over millions of steps, it's much too
-        # large a step and can wreck them in a couple of epochs (confirmed:
-        # a 2-epoch BC pass on top of a loaded checkpoint sent eval reward
-        # from +2.2 down to -12.4). PPO's own clipped update is safe for this;
-        # let it adapt to the new (shop) parts of the observation gradually.
+        # Skip BC when resuming from a checkpoint: BC's optimizer is tuned for
+        # training from scratch and can wreck already fine-tuned weights.
         print("=== Phase 2 skipped (--init-checkpoint): going straight to RL fine-tuning ===", flush=True)
     else:
         print(f"=== Phase 2: behavior cloning the policy for {args.bc_epochs} epochs ===", flush=True)

@@ -101,7 +101,7 @@ class BalatroEnv(gym.Env):
       - dim HAND_SLOTS+1: shop choice, 0/1 = buy that offering, SHOP_SLOTS =
         reroll, SHOP_SLOTS+1 = leave the shop. Only read during the shop phase.
 
-    Observation: a flat float vector -- 8 hand slots x (rank, one-hot suit),
+    Observation: a flat float vector. 8 hand slots x (rank, one-hot suit),
     hands/discards remaining, round progress, normalized money/ante/blind
     index, joker-slot fill fraction, the best achievable hand type, 8 flags
     for which cards form that hand, a shop-phase flag, up to SHOP_SLOTS shop
@@ -228,7 +228,7 @@ class BalatroEnv(gym.Env):
             # boss that shrinks hand size).
             selected = [i for i in range(HAND_SLOTS) if action[i] and i < len(game.hand)]
             if not selected:
-                # Nothing valid was flagged -- fall back to the single highest card
+                # Nothing valid was flagged, so fall back to the single highest card
                 # instead of just rejecting the action.
                 selected = [max(range(len(game.hand)), key=lambda i: game.hand[i].rank.chip_value)]
             elif len(selected) > 5:

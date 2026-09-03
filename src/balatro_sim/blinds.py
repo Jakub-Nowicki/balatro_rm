@@ -27,7 +27,7 @@ ANTE_BASE_CHIPS = {
 }
 
 # None of the 8 bosses eligible at Ante 1 override the requirement multiplier
-# (The Wall's 4x, The Needle's 1x etc. only appear at higher antes) -- 2x is
+# (The Wall's 4x, The Needle's 1x etc. only appear at higher antes), so 2x is
 # accurate for every Boss Blind this simulator can currently produce.
 BLIND_MULTIPLIER = {Blind.SMALL: 1.0, Blind.BIG: 1.5, Blind.BOSS: 2.0}
 

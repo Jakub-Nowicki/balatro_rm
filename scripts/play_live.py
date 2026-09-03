@@ -6,12 +6,10 @@ Requires BalatroBot's server already running (`uv run balatrobot serve` from
 its mod folder) with Balatro open and connected.
 
 By default the shop phase is handled by a simple heuristic, not the trained
-model: the real game's shop can offer any unlocked joker plus packs/
-vouchers, none of which a no-shop-trained checkpoint has ever seen. The
-heuristic buys the cheapest affordable joker if a slot is free, otherwise
-moves on. Pass --model-shop when testing a checkpoint that was actually
-trained with the shop enabled, to let it make its own buy/reroll/leave
-decisions instead -- see choose_shop_action().
+model: it buys the cheapest affordable joker if a slot is free, otherwise
+moves on. Pass --model-shop to let a checkpoint trained with the shop
+enabled make its own buy, reroll, and leave decisions instead. See
+choose_shop_action() below.
 
 Usage: python scripts/play_live.py [--checkpoint PATH] [--max-ante N] [--rpc-url URL] [--model-shop]
 """
@@ -92,10 +90,8 @@ def to_our_card(card: dict) -> Card:
 def best_available_hand_type_and_combo(hand_cards: list[dict]) -> tuple[HandType, list[Card]]:
     """The best poker hand type actually achievable from the current hand,
     independent of what the model chose, and the specific cards that form
-    it. Used as a diagnostic (lets us directly confirm whether something
-    like a flush was really on the table) and, via build_obs() below, as two
-    actual observation features -- see
-    balatro_sim.env._best_achievable_hand_type_and_combo for why."""
+    it. Used both for the printed diagnostic line and as two of the
+    observation features in build_obs() below."""
     cards = [to_our_card(c) for c in hand_cards]
     best_type = HandType.HIGH_CARD
     best_combo: list[Card] = cards[:1]
@@ -129,8 +125,8 @@ def current_blind_key(state: dict) -> str:
 
 
 def build_obs(state: dict) -> np.ndarray:
-    """Mirrors BalatroEnv._get_obs()'s exact feature order/normalization --
-    the model was trained on that encoding and expects it byte-for-byte."""
+    """Mirrors BalatroEnv._get_obs()'s exact feature order and normalization,
+    since the model was trained on that encoding and expects it exactly."""
     feats: list[float] = []
     hand_cards = state.get("hand", {}).get("cards", [])
     for i in range(HAND_SLOTS):
@@ -186,26 +182,21 @@ def choose_round_action(model, state: dict) -> tuple[list[int], int]:
     obs = build_obs(state)
     action, _ = model.predict(obs, deterministic=True)
     mode = int(action[HAND_SLOTS])
-    # Use the actual cards array length, not the separate "count" field --
-    # build_obs() already does this, and relying on two different fields for
-    # the same fact is a fragile assumption if they were ever to diverge.
     hand_size = len(state["hand"]["cards"])
     indices = [i for i in range(HAND_SLOTS) if action[i] and i < hand_size]
     if not indices:
-        indices = [0]  # degenerate fallback: play the first card, matching env.py's fallback
+        indices = [0]  # fall back to the first card, matching env.py's fallback
     elif len(indices) > 5:
         indices = indices[:5]
     if mode == 1 and state["round"].get("discards_left", 0) <= 0:
-        mode = 0  # no discards left -- fall back to playing, same as training
+        mode = 0  # no discards left, fall back to playing
     return indices, mode
 
 
 def choose_shop_purchase(state: dict) -> int | None:
-    """Cheapest-affordable-joker heuristic -- not the trained model, see module docstring.
-
-    The shop's card slots can offer Tarot/Planet/Spectral consumables as well
-    as jokers, not jokers exclusively -- our model has no use for those, so
-    they're filtered out here rather than bought just for being cheap."""
+    """Cheapest affordable joker heuristic, not the trained model (see module
+    docstring). The shop can also offer Tarot/Planet/Spectral cards, which
+    are filtered out here since the model has no use for them."""
     jokers_area = state.get("jokers") or {"cards": [], "limit": MAX_JOKER_SLOTS}
     if len(jokers_area.get("cards", [])) >= jokers_area.get("limit", MAX_JOKER_SLOTS):
         return None
@@ -221,27 +212,18 @@ def choose_shop_purchase(state: dict) -> int | None:
 
 
 def choose_shop_action(model, state: dict) -> int:
-    """The trained model's own shop decision -- 0..SHOP_SLOTS-1 = buy that
-    offering, SHOP_SLOTS = reroll, SHOP_SLOTS+1 = leave -- matching training
-    exactly. Only meaningful for a checkpoint that was actually trained with
-    the shop enabled; a no-shop checkpoint never saw a real shop observation
-    during training, so its shop_choice output would be arbitrary. See
-    choose_shop_purchase() above for the always-available heuristic
-    fallback, gated by --model-shop in play_game()."""
+    """The trained model's own shop decision: 0 to SHOP_SLOTS-1 buys that
+    offering, SHOP_SLOTS rerolls, SHOP_SLOTS+1 leaves. Only meaningful for a
+    checkpoint that was trained with the shop enabled, since a no-shop
+    checkpoint never saw a real shop observation during training."""
     obs = build_obs(state)
     action, _ = model.predict(obs, deterministic=True)
     return int(action[HAND_SLOTS + 1])
 
 
 def _unique_run_seed() -> str:
-    # Balatro's own auto-generated seed (when none is passed) collided
-    # repeatedly under rapid automated start() calls -- confirmed via a
-    # direct test: the identical seed came back twice in just 6 consecutive
-    # calls, which is astronomically unlikely for a properly high-entropy
-    # generator. Almost certainly a coarse time-based seed that can't keep up
-    # with bot-speed play (no human clicks "new run" several times a second).
-    # random.SystemRandom draws from the OS entropy source, sidestepping
-    # whatever low-resolution source Balatro's own generator relies on.
+    # Balatro's own auto-generated seed collides under rapid automated calls,
+    # so generate an explicit one from the OS entropy source instead.
     alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
     return "".join(random.SystemRandom().choices(alphabet, k=8))
 
@@ -278,11 +260,8 @@ def play_game(client: BalatroBotClient, model, max_ante: int, game_num: int = 1,
                 return result
 
         elif phase == "SHOP" and model_shop:
-            # Mirrors training: the model can buy/reroll repeatedly within
-            # the same shop visit (each is a separate env.step() during
-            # training too), not just one shot -- capped as a safety net
-            # against a degenerate repeat-forever choice, matching env.py's
-            # own MAX_CONSECUTIVE_INVALID guard for the same failure mode.
+            # The model can buy or reroll more than once per shop visit,
+            # same as during training. Capped so it can't loop forever.
             for _ in range(6):
                 shop_choice = choose_shop_action(model, state)
                 shop_cards = (state.get("shop") or {}).get("cards", [])
@@ -302,9 +281,7 @@ def play_game(client: BalatroBotClient, model, max_ante: int, game_num: int = 1,
                 else:
                     print(f"[{step}] SHOP -> leaving [model]", flush=True)
                     break
-                time.sleep(0.05)  # same settle delay as the outer loop -- back-to-back
-                                   # shop RPC calls with no delay corrupted game state
-                                   # (blinds left with no CURRENT/SELECT entry), confirmed directly
+                time.sleep(0.05)  # same settle delay as the outer loop, needed between shop calls too
                 if state["state"] != "SHOP":
                     break
             state = client.call("next_round")
